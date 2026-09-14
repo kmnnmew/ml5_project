@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="ko">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Face Wake Monitor</title>
+	<script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
+	<style>
+		:root {
+			color-scheme: dark;
+			--background: #10161d;
+			--panel: #18232d;
+			--border: #334554;
+			--text: #edf4f7;
+			--muted: #9eb0ba;
+			--awake: #6ee7b7;
+			--sleeping: #f9a8d4;
+		}
+
+		* { box-sizing: border-box; }
+		body {
+			margin: 0;
+			min-height: 100vh;
+			padding: 32px 18px;
+			color: var(--text);
+			background: radial-gradient(circle at top left, #213744, var(--background) 52%);
+			font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+		}
+
+		main { width: min(960px, 100%); margin: 0 auto; }
+		header { margin-bottom: 22px; }
+		.eyebrow { margin: 0 0 8px; color: var(--awake); font-size: .78rem; font-weight: 700; letter-spacing: .14em; }
+		h1 { margin: 0; font-size: clamp(2rem, 6vw, 4rem); line-height: 1; }
+		.intro { margin: 14px 0 0; color: var(--muted); }
+		.monitor { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); box-shadow: 0 20px 60px #0005; }
+		.stage { position: relative; aspect-ratio: 16 / 10; min-height: 260px; background: #080c10; }
+		video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+		canvas { pointer-events: none; }
+		.guide { position: absolute; inset: 0 0 50%; border-bottom: 1px dashed #ffffff55; pointer-events: none; }
+		.guide span { position: absolute; right: 14px; bottom: 8px; color: #ffffff99; font-size: .75rem; }
+		.status { padding: 22px; border-top: 1px solid var(--border); }
+		.status-label { margin: 0 0 5px; color: var(--muted); font-size: .82rem; }
+		#message { margin: 0; color: var(--awake); font-size: clamp(1.5rem, 4vw, 2.6rem); font-weight: 800; }
+		#message.sleeping { color: var(--sleeping); }
+		.controls { display: flex; align-items: center; gap: 14px; margin-top: 18px; }
+		button { padding: 12px 22px; border: 0; border-radius: 7px; color: #092019; background: var(--awake); font: inherit; font-weight: 800; cursor: pointer; }
+		button:disabled { cursor: wait; opacity: .6; }
+		#detail { color: var(--muted); font-size: .9rem; }
+		.error { color: #fca5a5 !important; }
+	</style>
+</head>
+<body>
+	<main>
+		<header>
+			<p class="eyebrow">ML5 / FACE MONITOR</p>
+			<h1>깨어있나요?</h1>
+			<p class="intro">코의 위치를 기준으로 화면 중앙보다 아래에 있으면 수면 상태로 표시합니다.</p>
+		</header>
+
+		<section class="monitor" aria-label="얼굴 상태 모니터">
+			<div class="stage">
+				<video id="video" autoplay muted playsinline></video>
+				<canvas id="overlay"></canvas>
+				<div class="guide"><span>화면 중앙 기준선</span></div>
+			</div>
+			<div class="status">
+				<p class="status-label">현재 상태</p>
+				<p id="message">시작 버튼을 눌러주세요.</p>
+				<div class="controls">
+					<button id="startButton" type="button">START</button>
+					<span id="detail">카메라 권한이 필요합니다.</span>
+				</div>
+			</div>
+		</section>
+	</main>
+
+	<script>
+		const video = document.getElementById('video');
+		const canvas = document.getElementById('overlay');
+		const context = canvas.getContext('2d');
+		const message = document.getElementById('message');
+		const detail = document.getElementById('detail');
+		const startButton = document.getElementById('startButton');
+		let faceModel;
+
+		function setStatus(text, isSleeping = false) {
+			message.textContent = text;
+			message.classList.toggle('sleeping', isSleeping);
+		}
+
+		function drawFace(face) {
+			const nose = face.parts.nose[3];
+			const x = nose._x;
+			const y = nose._y;
+			context.clearRect(0, 0, canvas.width, canvas.height);
+			context.fillStyle = '#6ee7b7';
+			context.beginPath();
+			context.arc(x, y, 8, 0, Math.PI * 2);
+			context.fill();
+			return y;
+		}
+
+		function detect() {
+			faceModel.detect(video, (error, results) => {
+				if (error) {
+					console.error('ml5 face detection error:', error);
+					detail.textContent = '얼굴 인식을 다시 시도하고 있습니다.';
+					setTimeout(detect, 250);
+					return;
+				}
+				if (!results || results.length === 0) {
+					context.clearRect(0, 0, canvas.width, canvas.height);
+					setStatus('얼굴을 찾고 있습니다.');
+				} else {
+					const noseY = drawFace(results[0]);
+					const centerY = video.videoHeight / 2;
+					const isSleeping = noseY > centerY;
+					setStatus(isSleeping ? '자고 있습니다.' : '깨어있습니다.', isSleeping);
+					detail.textContent = `코 위치: ${Math.round(noseY)} / 중앙: ${Math.round(centerY)}`;
+				}
+				setTimeout(detect, 80);
+			});
+		}
+
+
+		function loadFaceModel() {
+			return new Promise((resolve, reject) => {
+				try {
+					faceModel = ml5.faceApi(
+						video,
+						{ withLandmarks: true, withDescriptors: false, minConfidence: 0.5 },
+						() => resolve()
+					);
+				} catch (error) {
+					reject(error);
+				}
+			});
+		}
+		async function startMonitoring() {
+			startButton.disabled = true;
+			setStatus('카메라를 준비하고 있습니다.');
+			try {
+				const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+				video.srcObject = stream;
+				await video.play();
+				if (!video.videoWidth || !video.videoHeight) {
+					await new Promise((resolve) => {
+						video.addEventListener('loadedmetadata', resolve, { once: true });
+					});
+				}
+				if (!video.videoWidth || !video.videoHeight) {
+					throw new Error('카메라 영상 크기를 확인할 수 없습니다.');
+				}
+				canvas.width = video.videoWidth;
+				canvas.height = video.videoHeight;
+				detail.textContent = '얼굴 인식 모델을 불러오는 중입니다.';
+				await loadFaceModel();
+				detail.textContent = '얼굴 인식 중';
+				detect();
+			} catch (error) {
+				setStatus('카메라를 시작할 수 없습니다.');
+				message.classList.add('error');
+				detail.textContent = 'HTTPS 또는 localhost에서 카메라 권한을 허용해 주세요.';
+				startButton.disabled = false;
+			}
+		}
+
+		startButton.addEventListener('click', startMonitoring);
+	</script>
+</body>
+</html>
