@@ -3,7 +3,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Face Wake Monitor</title>
+	<title>Face Wake Monitor v2</title>
 	<script src="https://unpkg.com/ml5@0.12.2/dist/ml5.min.js"></script>
 	<style>
 		:root {
@@ -33,7 +33,6 @@
 		h1 { margin: 0; font-size: clamp(2rem, 6vw, 4rem); line-height: 1; }
 		.intro { margin: 14px 0 0; color: var(--muted); }
 		.monitor { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); box-shadow: 0 20px 60px #0005; }
-		/* aspect-ratio 는 카메라 해상도를 알게 되면 JS 에서 실제 비율로 교체합니다. */
 		.stage { position: relative; aspect-ratio: 4 / 3; min-height: 260px; background: #080c10; }
 		video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); }
 		canvas { pointer-events: none; }
@@ -48,6 +47,7 @@
 		button:disabled { cursor: wait; opacity: .6; }
 		#detail { color: var(--muted); font-size: .9rem; }
 		.error { color: #fca5a5 !important; }
+		.build { margin-top: 10px; color: #64748b; font-size: .75rem; }
 	</style>
 </head>
 <body>
@@ -60,8 +60,9 @@
 
 		<section class="monitor" aria-label="얼굴 상태 모니터">
 			<div class="stage" id="stage">
-				<video id="video" autoplay muted playsinline></video>
-				<canvas id="overlay"></canvas>
+				<!-- width/height 속성이 반드시 있어야 합니다. ml5 가 이 값으로 좌표를 리사이즈합니다. -->
+				<video id="video" width="640" height="480" autoplay muted playsinline></video>
+				<canvas id="overlay" width="640" height="480"></canvas>
 				<div class="guide"><span>화면 중앙 기준선</span></div>
 			</div>
 			<div class="status">
@@ -71,11 +72,14 @@
 					<button id="startButton" type="button">START</button>
 					<span id="detail">카메라 권한이 필요합니다.</span>
 				</div>
+				<p class="build">build: v2 — 콘솔에 "FaceWakeMonitor v2" 가 보이면 최신 파일입니다.</p>
 			</div>
 		</section>
 	</main>
 
 	<script>
+		console.log('FaceWakeMonitor v2 loaded');
+
 		const video = document.getElementById('video');
 		const stage = document.getElementById('stage');
 		const canvas = document.getElementById('overlay');
@@ -90,6 +94,20 @@
 			message.classList.toggle('sleeping', isSleeping);
 		}
 
+		// ml5 는 결과를 video.width / video.height 로 리사이즈합니다.
+		// 이 값이 0 이면 face-api 가 "resizeResults - invalid dimensions" 를 던지므로
+		// 매 프레임 직전에 방어적으로 다시 맞춰 줍니다.
+		function syncSize() {
+			const w = video.videoWidth || 640;
+			const h = video.videoHeight || 480;
+			if (video.width !== w) video.width = w;
+			if (video.height !== h) video.height = h;
+			if (canvas.width !== w) canvas.width = w;
+			if (canvas.height !== h) canvas.height = h;
+			stage.style.aspectRatio = w + ' / ' + h;
+			return { w, h };
+		}
+
 		function drawFace(face) {
 			const nose = face.parts.nose[3];
 			context.clearRect(0, 0, canvas.width, canvas.height);
@@ -101,10 +119,11 @@
 		}
 
 		function detect() {
+			const { h } = syncSize();
 			faceModel.detect((error, results) => {
 				if (error) {
-					console.error('ml5 face detection error:', error);
-					detail.textContent = '얼굴 인식 오류: ' + (error.message || error);
+					console.error('ml5 face detection error:', error, 'video.width =', video.width, 'video.height =', video.height);
+					detail.textContent = '오류: ' + (error.message || error);
 					setTimeout(detect, 500);
 					return;
 				}
@@ -113,10 +132,10 @@
 					setStatus('얼굴을 찾고 있습니다.');
 				} else {
 					const noseY = drawFace(results[0]);
-					const centerY = video.videoHeight / 2;
+					const centerY = h / 2;
 					const isSleeping = noseY > centerY;
 					setStatus(isSleeping ? '자고 있습니다.' : '깨어있습니다.', isSleeping);
-					detail.textContent = `코 위치: ${Math.round(noseY)} / 중앙: ${Math.round(centerY)}`;
+					detail.textContent = '코 위치: ' + Math.round(noseY) + ' / 중앙: ' + Math.round(centerY);
 				}
 				requestAnimationFrame(detect);
 			});
@@ -134,36 +153,21 @@
 
 		async function startMonitoring() {
 			startButton.disabled = true;
-			setStatus('카메라를 준비하고 있습니다.');
 			message.classList.remove('error');
+			setStatus('카메라를 준비하고 있습니다.');
 			try {
 				const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
 				video.srcObject = stream;
 				await video.play();
 				if (!video.videoWidth || !video.videoHeight) {
-					await new Promise((resolve) => {
-						video.addEventListener('loadedmetadata', resolve, { once: true });
-					});
+					await new Promise((resolve) => video.addEventListener('loadedmetadata', resolve, { once: true }));
 				}
-				if (!video.videoWidth || !video.videoHeight) {
-					throw new Error('카메라 영상 크기를 확인할 수 없습니다.');
-				}
-
-				// ★ 핵심 수정 ★
-				// ml5 는 결과 좌표를 video.width / video.height 로 리사이즈합니다.
-				// 이 속성은 CSS 크기가 아니라 HTML 속성값이라 기본값이 0 이고,
-				// 0 이면 face-api 가 "resizeResults - invalid dimensions" 에러를 던집니다.
-				video.width = video.videoWidth;
-				video.height = video.videoHeight;
-
-				canvas.width = video.videoWidth;
-				canvas.height = video.videoHeight;
-				// 화면 비율을 실제 카메라 비율과 맞춰서 점선 기준선 == videoHeight/2 가 되게 함
-				stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+				const size = syncSize();
+				console.log('camera size', video.videoWidth, video.videoHeight, '-> video.width', video.width, video.height);
 
 				detail.textContent = '얼굴 인식 모델을 불러오는 중입니다.';
 				await loadFaceModel();
-				detail.textContent = '얼굴 인식 중';
+				detail.textContent = '얼굴 인식 중 (' + size.w + 'x' + size.h + ')';
 				detect();
 			} catch (error) {
 				console.error(error);
