@@ -33,8 +33,9 @@
 		h1 { margin: 0; font-size: clamp(2rem, 6vw, 4rem); line-height: 1; }
 		.intro { margin: 14px 0 0; color: var(--muted); }
 		.monitor { overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); box-shadow: 0 20px 60px #0005; }
-		.stage { position: relative; aspect-ratio: 16 / 10; min-height: 260px; background: #080c10; }
-		video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+		/* aspect-ratio 는 카메라 해상도를 알게 되면 JS 에서 실제 비율로 교체합니다. */
+		.stage { position: relative; aspect-ratio: 4 / 3; min-height: 260px; background: #080c10; }
+		video, canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; transform: scaleX(-1); }
 		canvas { pointer-events: none; }
 		.guide { position: absolute; inset: 0 0 50%; border-bottom: 1px dashed #ffffff55; pointer-events: none; }
 		.guide span { position: absolute; right: 14px; bottom: 8px; color: #ffffff99; font-size: .75rem; }
@@ -58,7 +59,7 @@
 		</header>
 
 		<section class="monitor" aria-label="얼굴 상태 모니터">
-			<div class="stage">
+			<div class="stage" id="stage">
 				<video id="video" autoplay muted playsinline></video>
 				<canvas id="overlay"></canvas>
 				<div class="guide"><span>화면 중앙 기준선</span></div>
@@ -76,6 +77,7 @@
 
 	<script>
 		const video = document.getElementById('video');
+		const stage = document.getElementById('stage');
 		const canvas = document.getElementById('overlay');
 		const context = canvas.getContext('2d');
 		const message = document.getElementById('message');
@@ -90,22 +92,20 @@
 
 		function drawFace(face) {
 			const nose = face.parts.nose[3];
-			const x = nose._x;
-			const y = nose._y;
 			context.clearRect(0, 0, canvas.width, canvas.height);
 			context.fillStyle = '#6ee7b7';
 			context.beginPath();
-			context.arc(x, y, 8, 0, Math.PI * 2);
+			context.arc(nose.x, nose.y, 8, 0, Math.PI * 2);
 			context.fill();
-			return y;
+			return nose.y;
 		}
 
 		function detect() {
-			faceModel.detect(video, (error, results) => {
+			faceModel.detect((error, results) => {
 				if (error) {
 					console.error('ml5 face detection error:', error);
-					detail.textContent = '얼굴 인식을 다시 시도하고 있습니다.';
-					setTimeout(detect, 250);
+					detail.textContent = '얼굴 인식 오류: ' + (error.message || error);
+					setTimeout(detect, 500);
 					return;
 				}
 				if (!results || results.length === 0) {
@@ -118,27 +118,24 @@
 					setStatus(isSleeping ? '자고 있습니다.' : '깨어있습니다.', isSleeping);
 					detail.textContent = `코 위치: ${Math.round(noseY)} / 중앙: ${Math.round(centerY)}`;
 				}
-				setTimeout(detect, 80);
+				requestAnimationFrame(detect);
 			});
 		}
-
 
 		function loadFaceModel() {
 			return new Promise((resolve, reject) => {
-				try {
-					faceModel = ml5.faceApi(
-						video,
-						{ withLandmarks: true, withDescriptors: false, minConfidence: 0.5 },
-						() => resolve()
-					);
-				} catch (error) {
-					reject(error);
-				}
+				faceModel = ml5.faceApi(
+					video,
+					{ withLandmarks: true, withDescriptors: false, minConfidence: 0.5 },
+					(error) => (error ? reject(error) : resolve())
+				);
 			});
 		}
+
 		async function startMonitoring() {
 			startButton.disabled = true;
 			setStatus('카메라를 준비하고 있습니다.');
+			message.classList.remove('error');
 			try {
 				const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
 				video.srcObject = stream;
@@ -151,16 +148,28 @@
 				if (!video.videoWidth || !video.videoHeight) {
 					throw new Error('카메라 영상 크기를 확인할 수 없습니다.');
 				}
+
+				// ★ 핵심 수정 ★
+				// ml5 는 결과 좌표를 video.width / video.height 로 리사이즈합니다.
+				// 이 속성은 CSS 크기가 아니라 HTML 속성값이라 기본값이 0 이고,
+				// 0 이면 face-api 가 "resizeResults - invalid dimensions" 에러를 던집니다.
+				video.width = video.videoWidth;
+				video.height = video.videoHeight;
+
 				canvas.width = video.videoWidth;
 				canvas.height = video.videoHeight;
+				// 화면 비율을 실제 카메라 비율과 맞춰서 점선 기준선 == videoHeight/2 가 되게 함
+				stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+
 				detail.textContent = '얼굴 인식 모델을 불러오는 중입니다.';
 				await loadFaceModel();
 				detail.textContent = '얼굴 인식 중';
 				detect();
 			} catch (error) {
-				setStatus('카메라를 시작할 수 없습니다.');
+				console.error(error);
+				setStatus('시작할 수 없습니다.');
 				message.classList.add('error');
-				detail.textContent = 'HTTPS 또는 localhost에서 카메라 권한을 허용해 주세요.';
+				detail.textContent = (error && error.message) || 'HTTPS 또는 localhost 에서 카메라 권한을 허용해 주세요.';
 				startButton.disabled = false;
 			}
 		}
